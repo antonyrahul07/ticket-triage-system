@@ -1,0 +1,20 @@
+# Core FastAPI framework for building high-performance asynchronous RESTful APIs
+fastapi>=0.110.0,<1.0.0
+
+# Production-grade ASGI server with standard dependencies (uvloop/httptools) to serve FastAPI
+uvicorn[standard]>=0.28.0,<1.0.0
+
+# Data validation, serialization, and settings management leveraging Python type hints
+pydantic>=2.6.0,<3.0.0
+
+# Type-safe environment settings management (preferred over raw os.environ because it provides auto-parsing, validation, and type casting)
+pydantic-settings>=2.2.0,<3.0.0
+
+# Machine learning library required to deserialize and run inference on trained scikit-learn models (TF-IDF + Logistic Regression)
+scikit-learn>=1.4.0,<2.0.0
+
+# Lightweight object serialization tool needed for loading the pre-trained model binary (.joblib)
+joblib>=1.3.2,<2.0.0
+
+# Form parser dependency required by FastAPI for handling multipart request data and form encodings
+python-multipart>=0.0.9,<1.0.0
