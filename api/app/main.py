@@ -6,10 +6,10 @@ AI TICKET TRIAGE SYSTEM — FASTAPI BACKEND ARCHITECTURE & REQUEST FLOW
                                HACKATHON ARCHITECTURE DIAGRAM
                                
   +-------------------+
-  |   HTTP Client     |  (Frontend / API Consumer / Postman)
+  |   HTTP Client     |  (Web Dashboard / API Consumer / Postman)
   +---------+---------+
             |
-            | 1. Incoming HTTP Request (e.g. POST /predict)
+            | 1. Incoming HTTP Request (e.g. POST /predict or GET /dashboard)
             v
   +---------+---------+
   |   FastAPI Route   |  (main.py route handlers)
@@ -30,29 +30,24 @@ AI TICKET TRIAGE SYSTEM — FASTAPI BACKEND ARCHITECTURE & REQUEST FLOW
             | 4. Format & Validate Output (PredictionResponse)
             v
   +---------+---------+
-  |  Response Schema  |  (schemas.py enforces queue, priority, confidence schema)
+  |  Response Schema  |  (schemas.py enforces queue, type, priority, confidence)
   +---------+---------+
             |
-            | 5. JSON Response Transmission (HTTP 200 OK)
+            | 5. JSON / HTML Response Transmission (HTTP 200 OK)
             v
   +---------+---------+
   |   HTTP Client     |
   +-------------------+
-
-KEY ARCHITECTURAL DESIGN PRINCIPLES FOR HACKATHON JUDGES:
-- Decoupled System Architecture: Backend API owns server infrastructure & routing;
-  ML training pipeline operates asynchronously and produces a decoupled `model.joblib` artifact.
-- Non-Blocking Startup: API starts cleanly even if the model artifact isn't ready yet,
-  serving degraded health status until model file loading completes.
-- Production Security & Privacy: Request payloads are strictly validated, client error messages
-  contain no raw stack traces, and privacy-sensitive customer data is never written to log files.
 ================================================================================
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.exceptions import ModelNotLoadedException, register_exception_handlers
@@ -102,9 +97,8 @@ app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     description=(
-        "Backend REST API for the AI Customer Support Ticket Triage System. "
-        "Serves high-throughput ML predictions (queue classification, priority assignment, and confidence scoring) "
-        "generated from a scikit-learn pipeline (TF-IDF + Logistic Regression) trained asynchronously by Member 1."
+        "Backend REST API and Web Dashboard for the AI Support Ticket Triage System. "
+        "Serves high-throughput ML predictions (queue classification, type assignment, priority scoring, and confidence analysis)."
     ),
     lifespan=lifespan,
 )
@@ -112,19 +106,39 @@ app = FastAPI(
 # Register custom exception handlers (503, 422, 500 error responses)
 register_exception_handlers(app)
 
+# Static directory setup for Web Dashboard
+STATIC_DIR = Path(__file__).parent / "static"
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get(
+    "/dashboard",
+    tags=["Dashboard"],
+    summary="Interactive AI Ticket Triage Dashboard UI",
+    description="Serves the web dashboard for live ticket submission, prediction visualization, and triage analytics.",
+)
+async def get_dashboard():
+    """Serves the interactive single-page Dashboard web interface."""
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"message": "Dashboard UI file not found."}
+
 
 @app.get(
     "/",
     tags=["General"],
-    summary="API Root Welcome Endpoint",
-    description="Returns a welcome message and direct link to interactive OpenAPI documentation.",
+    summary="API Root Welcome Endpoint & Dashboard Redirect",
+    description="Returns welcome metadata and direct pointers to the Interactive Dashboard (/dashboard) and OpenAPI docs (/docs).",
 )
 async def read_root() -> dict[str, str]:
-    """Root endpoint welcoming users and directing them to interactive API documentation."""
+    """Root endpoint welcoming users and directing them to interactive Dashboard and API docs."""
     return {
         "title": settings.API_TITLE,
         "version": settings.API_VERSION,
         "message": "Welcome to the AI Ticket Triage System API.",
+        "dashboard": "/dashboard",
         "documentation": "/docs",
     }
 
@@ -134,10 +148,7 @@ async def read_root() -> dict[str, str]:
     response_model=HealthResponse,
     tags=["Health"],
     summary="System Health & Readiness Check Probe",
-    description=(
-        "Endpoint intended for container orchestration probes (e.g. Docker HEALTHCHECK). "
-        "Always returns HTTP 200 OK while reporting true model load status ('healthy' vs 'degraded')."
-    ),
+    description="Endpoint for container healthchecks (e.g. Docker HEALTHCHECK). Always returns HTTP 200 OK while reporting true model load status.",
 )
 async def check_health() -> HealthResponse:
     """Returns current system operational status and model readiness."""
@@ -155,11 +166,8 @@ async def check_health() -> HealthResponse:
     "/predict",
     response_model=PredictionResponse,
     tags=["Predictions"],
-    summary="Predict Support Ticket Queue & Priority",
-    description=(
-        "Accepts a support ticket (subject + description), validates inputs via Pydantic, "
-        "and runs ML inference to return department queue assignment, priority score, and prediction confidence."
-    ),
+    summary="Predict Support Ticket Queue, Type & Priority",
+    description="Accepts support ticket text, executes ML inference, and returns department queue assignment, ticket type, priority score, and confidence.",
     responses={
         200: {"model": PredictionResponse, "description": "Successful classification prediction."},
         422: {"model": ErrorResponse, "description": "Validation error in ticket request payload."},
@@ -178,10 +186,10 @@ async def predict_ticket(ticket: TicketRequest) -> PredictionResponse:
     # Perform inference
     prediction = loader.predict(ticket.subject, ticket.description)
 
-    # Privacy-conscious logging: log metadata length and output, avoid logging raw customer PII text
+    # Privacy-conscious logging
     logger.info(
         f"Prediction complete | Subj length: {len(ticket.subject)} chars | Desc length: {len(ticket.description)} chars "
-        f"-> Queue: '{prediction['queue']}' | Priority: '{prediction['priority']}' | Confidence: {prediction['confidence']}"
+        f"-> Queue: '{prediction['queue']}' | Type: '{prediction.get('ticket_type', 'Request')}' | Priority: '{prediction['priority']}' | Confidence: {prediction['confidence']}"
     )
 
     return PredictionResponse(**prediction)
@@ -191,28 +199,20 @@ async def predict_ticket(ticket: TicketRequest) -> PredictionResponse:
     "/reload-model",
     tags=["Management"],
     summary="Reload ML Model Artifact On-Demand",
-    description=(
-        "Hackathon convenience endpoint to re-trigger model loading from disk into memory "
-        "without taking down or restarting the running API container."
-    ),
+    description="Convenience endpoint to re-trigger model loading from disk into memory without restarting the API container.",
     responses={
         200: {"description": "Model reloaded successfully."},
         503: {"model": ErrorResponse, "description": "Model reload failed or file still missing."},
     },
 )
 async def reload_model() -> dict[str, Any]:
-    """
-    HACKATHON CONVENIENCE ENDPOINT:
-    In containerized multi-container hackathon setups, the ML training container may complete 
-    and output `model.joblib` after this FastAPI container has already booted. 
-    This endpoint permits manual or scriptable reloading of the model artifact from mounted shared 
-    volumes without restarting the API container.
-    """
+    """Reloads the model artifact from disk into memory on demand."""
     loader = get_model_loader()
 
     try:
-        # Reset internal reference and reload from disk
-        loader._model_artifact = None
+        loader._queue_model = None
+        loader._type_model = None
+        loader._type_vectorizer = None
         loader.load()
         logger.info("ML model artifact manually reloaded into memory via /reload-model endpoint.")
         return {
